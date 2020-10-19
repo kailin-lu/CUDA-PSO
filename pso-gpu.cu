@@ -58,7 +58,8 @@ __device__ __host__ float calcValue(Position p) {
 // Returns the index of the particle with the best position
 __global__ void updateTeamBestIndex(Particle *d_particles, float *d_team_best_value, int *d_team_best_index, int N) {
     *d_team_best_value = d_particles[0].best_value; 
-    for (int i = 0; i < N; i++) {
+    *d_team_best_index = 0; 
+    for (int i = 1; i < N; i++) {
         if (d_particles[i].best_value < *d_team_best_value) {
             *d_team_best_value = d_particles[i].best_value; 
             *d_team_best_index = i; 
@@ -88,20 +89,15 @@ __global__ void updateVelocity(Particle* d_particles, int *d_team_best_index, fl
     }
 }
 
-// Updates current position, checks if best position and value need to be updated
-__device__ void updateParticlePosition(Particle &p) {
-    p.current_position += p.velocity; 
-    float newValue = calcValue(p.current_position); 
-    if (newValue < p.best_value) {
-        p.best_value = newValue; 
-        p.best_position = p.current_position; 
-    }
-}
-
-__global__ void updatePosition(Particle* d_particles, int N) {
+__global__ void updatePosition(Particle *d_particles, int N) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x; 
     if (idx < N) {
-        updateParticlePosition(d_particles[idx]);
+        d_particles[idx].current_position += d_particles[idx].velocity; 
+        float newValue = calcValue(d_particles[idx].current_position); 
+        if (newValue < d_particles[idx].best_value) {
+            d_particles[idx].best_value = newValue; 
+            d_particles[idx].best_position = d_particles[idx].current_position; 
+        }
     }
 }
 
@@ -139,6 +135,9 @@ int main(void) {
     cudaMalloc((void **)&d_team_best_index, sizeof(int)); 
     cudaMalloc((void **)&d_team_best_value, sizeof(float)); 
 
+    // Initialize team best index and value 
+    updateTeamBestIndex<<<1,1>>>(d_particles, d_team_best_value, d_team_best_index, N); 
+
     // assign thread and blockcount 
     int threadCount = 256; 
     int blockCount = (N + threadCount - 1) / threadCount; 
@@ -147,24 +146,24 @@ int main(void) {
     long start = std::clock();
     // For i in interations 
     for (int i = 0; i < ITERATIONS; i++) {
-        updateVelocity<<<blockCount, threadCount>>>(d_particles, d_team_best_index, w, c_ind, c_team, N); // check to see if this runs sequentially 
+        updateVelocity<<<blockCount, threadCount>>>(d_particles, d_team_best_index, w, c_ind, c_team, N); 
         updatePosition<<<blockCount, threadCount>>>(d_particles, N); 
-
         updateTeamBestIndex<<<1,1>>>(d_particles, d_team_best_value, d_team_best_index, N); 
     }
 
     long stop = std::clock(); 
     long elapsed = (stop - start) * 1000 / CLOCKS_PER_SEC;
 
-    float team_best_value; 
+    // copy best particle back to host 
     int team_best_index; 
-
-    cudaMemcpy(&team_best_value, d_team_best_value, sizeof(float), cudaMemcpyDeviceToHost); 
     cudaMemcpy(&team_best_index, d_team_best_index, sizeof(int), cudaMemcpyDeviceToHost); 
+    
+    // copy particle data back to host 
+    cudaMemcpy(h_particles, d_particles, particleSize, cudaMemcpyDeviceToHost);
 
     // print results 
     std::cout << "Ending Best: " << std::endl;
-    std::cout << "Team best value: " << team_best_value << std::endl;
+    std::cout << "Team best value: " << h_particles[team_best_index].best_value << std::endl;
     std::cout << "Team best position: " << h_particles[team_best_index].best_position.toString() << std::endl; 
     
     std::cout << "Run time: " << elapsed << "ms" << std::endl;
