@@ -37,7 +37,7 @@ int getTeamBestIndex(Particle* particles, int N);
 void updateVelocity(Particle &p, Position team_best_position, float w, float c_ind, float c_team);
 void updatePosition(Particle &p);
 
-const unsigned int N = 2000; 
+const unsigned int N = 5000; 
 const unsigned int ITERATIONS = 1000; 
 const float SEARCH_MIN = -1000.0f; 
 const float SEARCH_MAX = 1000.0f; 
@@ -94,6 +94,9 @@ void updatePosition(Particle &p) {
 
 
 int main(void) {
+    // for timing 
+    long start = std::clock(); 
+
     // Random seed 
     std::srand(std::time(NULL)); 
 
@@ -121,8 +124,6 @@ int main(void) {
     std::cout << "Best value: " << team_best_value << std::endl; 
     std::cout << "Best position" << team_best_position.toString() << std::endl;
 
-    // for timing 
-    long start = std::clock(); 
     // For i in interations 
     for (int i = 0; i < ITERATIONS; i++) {
         // for each particle 
@@ -139,7 +140,7 @@ int main(void) {
     }
 
     long stop = std::clock(); 
-    long elapsed = stop - start; 
+    long elapsed = (stop - start) * 1000 / CLOCKS_PER_SEC;
 
     // print results 
     std::cout << "Ending Best: " << std::endl;

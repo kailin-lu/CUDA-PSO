@@ -121,6 +121,9 @@ __global__ void updatePosition(Particle *d_particles, int N) {
 
 
 int main(void) {
+    // for timing 
+    long start = std::clock();
+
     // Random seed for cpu 
     std::srand(std::time(NULL)); 
     // Random seed for gpu 
@@ -164,17 +167,13 @@ int main(void) {
     int blockSize = 1024; 
     int gridSize = (N + blockSize - 1) / blockSize; 
 
-    // for timing 
-    long start = std::clock();
     // For i in interations 
     for (int i = 0; i < ITERATIONS; i++) {
         updateVelocity<<<gridSize, blockSize>>>(d_particles, d_team_best_index, w, c_ind, c_team, N, state); 
         updatePosition<<<gridSize, blockSize>>>(d_particles, N); 
-        //updateTeamBestIndex<<<1,1>>>(d_particles, d_team_best_value, d_team_best_index, N); 
+        updateTeamBestIndex<<<1,1>>>(d_particles, d_team_best_value, d_team_best_index, N); 
     }
 
-    long stop = std::clock(); 
-    long elapsed = (stop - start) * 1000 / CLOCKS_PER_SEC;
 
     // copy best particle back to host 
     int team_best_index; 
@@ -182,6 +181,9 @@ int main(void) {
     
     // copy particle data back to host 
     cudaMemcpy(h_particles, d_particles, particleSize, cudaMemcpyDeviceToHost);
+
+    long stop = std::clock(); 
+    long elapsed = (stop - start) * 1000 / CLOCKS_PER_SEC;
 
     // print results 
     std::cout << "Ending Best: " << std::endl;

@@ -67,7 +67,7 @@ __global__ void init_kernel(curandState *state, long seed) {
 }
 
 // Returns the index of the particle with the best position
-__global__ void updateTeamBestIndex(Particle *d_particles, float *d_team_best_value, int *d_team_best_index, int N) {
+__global__ void updateTeamBestIndex(Particle *d_particles, float *team_best_value, int *team_best_index, int N) {
     __shared__ float best_value; 
     __shared__ int best_index; 
     best_value = d_particles[0].best_value;
@@ -82,18 +82,18 @@ __global__ void updateTeamBestIndex(Particle *d_particles, float *d_team_best_va
             __syncthreads(); 
         }
     }
-    *d_team_best_value = best_value; 
-    *d_team_best_index = best_index; 
+    *team_best_value = best_value; 
+    *team_best_index = best_index; 
 }
 
 
 // Update velocity for all particles 
-__global__ void updateVelocity(Particle* d_particles, int *d_team_best_index, float w, float c_ind, float c_team, int N, curandState *state) {
+__global__ void updateVelocity(Particle* d_particles, int *team_best_index, float w, float c_ind, float c_team, int N, curandState *state) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x; 
 
     __shared__ float best_x, best_y; 
-    best_x = d_particles[*d_team_best_index].best_position.x; 
-    best_y = d_particles[*d_team_best_index].best_position.y; 
+    best_x = d_particles[*team_best_index].best_position.x; 
+    best_y = d_particles[*team_best_index].best_position.y; 
     __syncthreads(); 
 
     if (idx < N) {
@@ -133,36 +133,45 @@ int main(void) {
     init_kernel<<<1,1>>>(state, clock()); 
 
     // Initialize particles 
-    Particle* h_particles = new Particle[N]; 
-    Particle* d_particles;  // for the gpu 
+    Particle *particles; 
+    size_t particleSize = sizeof(Particle) * N; 
 
+    // initialize variables for team best 
+    int *team_best_index; 
+    float *team_best_value; 
+
+    // Allocate particles in unified memory 
+    cudaMallocManaged(&particles, particleSize);
+    cudaMallocManaged(&team_best_index, sizeof(int)); 
+    
+    // Allocate team_best_value for gpu only 
+    cudaMalloc(&team_best_value, sizeof(float)); 
+
+    // Prefetch data to the GPU 
+    int device = cudaGetDevice(&device); 
+    cudaMemPrefetchAsync(team_best_index, sizeof(int), device, NULL); // ptr, size_t, device, stream 
+
+    // Memory hints 
+    cudaMemAdvise(particles, particleSize, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId); // start on cpu
+
+    //  Initialize particles on host 
     for (int i = 0; i < N; i++) {
         // Random starting position
-        h_particles[i].current_position.x = randomFloat(SEARCH_MIN, SEARCH_MAX); 
-        h_particles[i].current_position.y = randomFloat(SEARCH_MIN, SEARCH_MAX); 
-        h_particles[i].best_position.x = h_particles[i].current_position.x; 
-        h_particles[i].best_position.y = h_particles[i].current_position.y; 
-        h_particles[i].best_value = calcValue(h_particles[i].best_position); 
+        particles[i].current_position.x = randomFloat(SEARCH_MIN, SEARCH_MAX); 
+        particles[i].current_position.y = randomFloat(SEARCH_MIN, SEARCH_MAX); 
+        particles[i].best_position.x = particles[i].current_position.x; 
+        particles[i].best_position.y = particles[i].current_position.y; 
+        particles[i].best_value = calcValue(particles[i].best_position); 
         // Random starting velocity 
-        h_particles[i].velocity.x = randomFloat(SEARCH_MIN, SEARCH_MAX); 
-        h_particles[i].velocity.y = randomFloat(SEARCH_MIN, SEARCH_MAX); 
+        particles[i].velocity.x = randomFloat(SEARCH_MIN, SEARCH_MAX); 
+        particles[i].velocity.y = randomFloat(SEARCH_MIN, SEARCH_MAX); 
     }
 
-    // Allocate memory + copy data to gpu 
-    size_t particleSize = sizeof(Particle) * N; 
-    cudaMalloc((void **)&d_particles, particleSize); 
-    cudaMemcpy(d_particles, h_particles, particleSize, cudaMemcpyHostToDevice); // dest, source, size, direction
-
-    // initialize variables for gpu 
-    int *d_team_best_index; 
-    float *d_team_best_value; 
-
-    // Allocate gpu memory 
-    cudaMalloc((void **)&d_team_best_index, sizeof(int)); 
-    cudaMalloc((void **)&d_team_best_value, sizeof(float)); 
+    // Prefetch particles to gpu 
+    cudaMemPrefetchAsync(particles, particleSize, device, NULL); 
 
     // Initialize team best index and value 
-    updateTeamBestIndex<<<1,1>>>(d_particles, d_team_best_value, d_team_best_index, N); 
+    updateTeamBestIndex<<<1,1>>>(particles, team_best_value, team_best_index, N); 
 
     // assign thread and blockcount 
     int blockSize = 32; 
@@ -170,31 +179,32 @@ int main(void) {
 
     // For i in interations 
     for (int i = 0; i < ITERATIONS; i++) {
-        updateVelocity<<<gridSize, blockSize>>>(d_particles, d_team_best_index, w, c_ind, c_team, N, state); 
-        updatePosition<<<gridSize, blockSize>>>(d_particles, N); 
-        updateTeamBestIndex<<<gridSize, blockSize>>>(d_particles, d_team_best_value, d_team_best_index, N); 
+        updateVelocity<<<gridSize, blockSize>>>(particles, team_best_index, w, c_ind, c_team, N, state); 
+        updatePosition<<<gridSize, blockSize>>>(particles, N); 
+        updateTeamBestIndex<<<gridSize, blockSize>>>(particles, team_best_value, team_best_index, N); 
     }
 
-    // copy best particle back to host 
-    int team_best_index; 
-    cudaMemcpy(&team_best_index, d_team_best_index, sizeof(int), cudaMemcpyDeviceToHost); 
-    
-    // copy particle data back to host 
-    cudaMemcpy(h_particles, d_particles, particleSize, cudaMemcpyDeviceToHost);
+    // Wait for gpu to finish computation 
+    cudaDeviceSynchronize(); 
 
+    // Prefetch particles and best index back 
+    cudaMemPrefetchAsync(particles, particleSize, cudaCpuDeviceId); 
+    cudaMemPrefetchAsync(team_best_index, sizeof(int), cudaCpuDeviceId); 
+
+    // Stop clock
     long stop = std::clock(); 
     long elapsed = (stop - start) * 1000 / CLOCKS_PER_SEC;
 
     // print results 
     std::cout << "Ending Best: " << std::endl;
-    std::cout << "Team best value: " << h_particles[team_best_index].best_value << std::endl;
-    std::cout << "Team best position: " << h_particles[team_best_index].best_position.toString() << std::endl; 
+    std::cout << "Team best value: " << particles[*team_best_index].best_value << std::endl;
+    std::cout << "Team best position: " << particles[*team_best_index].best_position.toString() << std::endl; 
     
     std::cout << "Run time: " << elapsed << "ms" << std::endl;
 
-    cudaFree(d_particles); 
-    cudaFree(d_team_best_index); 
-    cudaFree(d_team_best_value); 
-    cudaFree(state); 
+    cudaFree(particles); 
+    cudaFree(team_best_index); 
+    cudaFree(team_best_value); 
+    cudaFree(state);
     return 0; 
 }
